@@ -85,6 +85,7 @@ def get_settings_menu(is_admin=False):
     ]
     if is_admin:
         keyboard.append([InlineKeyboardButton(text="👥 Пользователи", callback_data="settings_users")])
+        keyboard.append([InlineKeyboardButton(text="📈 Статистика бота", callback_data="settings_stats")])
     keyboard.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="menu_main")])
     return InlineKeyboardMarkup(inline_keyboard=keyboard)
 

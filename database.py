@@ -85,6 +85,14 @@ class User(Base):
     username = Column(String, nullable=True)
     added_at = Column(DateTime, default=datetime.utcnow)
 
+class ActivityLog(Base):
+    __tablename__ = 'activity_log'
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    user_id = Column(Integer)
+    action = Column(String)
+    details = Column(String, nullable=True)
+    timestamp = Column(DateTime, default=datetime.utcnow)
+
 import os
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DB_PATH = os.path.join(BASE_DIR, 'statsbot.db')

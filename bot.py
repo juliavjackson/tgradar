@@ -9,10 +9,11 @@ from aiogram.types import Message, CallbackQuery, InlineKeyboardButton, InlineKe
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from sqlalchemy.future import select
-from sqlalchemy import delete
+from sqlalchemy import delete, func
+from datetime import datetime, timedelta
 from dotenv import load_dotenv
 
-from database import init_db, AsyncSessionLocal, Campaign, Post, Channel, PostMetricsHistory, UTMLink, Setting, User
+from database import init_db, AsyncSessionLocal, Campaign, Post, Channel, PostMetricsHistory, UTMLink, Setting, User, ActivityLog
 from keyboards import (
     get_main_menu, get_campaigns_menu, get_posts_menu, get_back_keyboard,
     get_campaign_view_keyboard, get_post_view_keyboard,
@@ -31,6 +32,40 @@ logging.basicConfig(level=logging.INFO)
 
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
+async def log_activity(user_id: int, action: str, details: str = None):
+    async with AsyncSessionLocal() as session:
+        log = ActivityLog(user_id=user_id, action=action, details=details)
+        session.add(log)
+        await session.commit()
+
+# Middleware for automatic logging
+from aiogram import BaseMiddleware
+from aiogram.types import TelegramObject
+from typing import Callable, Dict, Any, Awaitable
+
+class LoggingMiddleware(BaseMiddleware):
+    async def __call__(
+        self,
+        handler: Callable[[TelegramObject, Dict[str, Any]], Awaitable[Any]],
+        event: TelegramObject,
+        data: Dict[str, Any]
+    ) -> Any:
+        user = data.get('event_from_user')
+        if user:
+            action = 'message'
+            details = None
+            if hasattr(event, 'text'): details = event.text
+            elif hasattr(event, 'data'): 
+                action = 'callback'
+                details = event.data
+            
+            # Run logging in background
+            asyncio.create_task(log_activity(user.id, action, details))
+        
+        return await handler(event, data)
+
+dp.update.outer_middleware(LoggingMiddleware())
+
 parser = TelegramParser()
 async def is_authorized(user_id: int) -> bool:
     if user_id == ADMIN_ID: return True
@@ -1291,7 +1326,7 @@ async def process_metrica_token(message: Message, state: FSMContext):
 async def cb_channel_add_missing(callback: CallbackQuery, state: FSMContext):
     await callback.answer()
     handle = callback.data.split(":")[1]
-    logging.info(f"User clicked add missing channel: {handle}")
+    logging.info(f"User, ActivityLog clicked add missing channel: {handle}")
     await state.update_data(handle=handle)
     try:
         ch_info = await parser.get_channel_info(handle)
@@ -1347,7 +1382,7 @@ async def process_user_id(message: Message, state: FSMContext):
         return
     
     async with AsyncSessionLocal() as session:
-        new_user = User(user_id=target_id, role='user', username=message.from_user.username)
+        new_user = User, ActivityLog(user_id=target_id, role='user', username=message.from_user.username)
         await session.merge(new_user)
         await session.commit()
     
@@ -1357,7 +1392,7 @@ async def process_user_id(message: Message, state: FSMContext):
 @dp.callback_query(F.data == "user_list")
 async def cb_user_list(callback: CallbackQuery):
     async with AsyncSessionLocal() as session:
-        res = await session.execute(select(User))
+        res = await session.execute(select(User, ActivityLog))
         users = res.scalars().all()
     
     text = "👥 <b>Список пользователей:</b>\n\n"
@@ -1375,6 +1410,56 @@ async def cmd_settings(message: Message, state: FSMContext):
         return
     await state.clear()
     await message.answer("⚙️ <b>Настройки</b>", parse_mode="HTML", reply_markup=get_settings_menu(is_admin=True))
+
+
+
+@dp.callback_query(F.data == "settings_stats")
+async def cb_settings_stats(callback: CallbackQuery):
+    if not await is_admin(callback.from_user.id): return
+    
+    async with AsyncSessionLocal() as session:
+        # Total Users
+        res_users = await session.execute(select(func.count(User.user_id)))
+        total_users = res_users.scalar()
+        
+        # Total Campaigns
+        res_camp = await session.execute(select(func.count(Campaign.id)))
+        total_campaigns = res_camp.scalar()
+        
+        # Total Posts
+        res_posts = await session.execute(select(func.count(Post.id)))
+        total_posts = res_posts.scalar()
+        
+        # Activity last 24h
+        yesterday = datetime.utcnow() - timedelta(days=1)
+        res_act = await session.execute(
+            select(func.count(ActivityLog.id)).where(ActivityLog.timestamp >= yesterday)
+        )
+        actions_24h = res_act.scalar()
+        
+        # Last 5 actions
+        res_last = await session.execute(
+            select(ActivityLog, User.username)
+            .outerjoin(User, ActivityLog.user_id == User.user_id)
+            .order_by(ActivityLog.timestamp.desc())
+            .limit(10)
+        )
+        last_actions = res_last.all()
+    
+    text = "📈 <b>Статистика бота</b>\n\n"
+    text += f"👥 Всего пользователей: <b>{total_users}</b>\n"
+    text += f"📊 Активность (24ч): <b>{actions_24h} действий</b>\n\n"
+    text += f"📁 Кампаний: <b>{total_campaigns}</b>\n"
+    text += f"📝 Постов в трекинге: <b>{total_posts}</b>\n\n"
+    text += "🕒 <b>Последние действия:</b>\n"
+    
+    for log, username in last_actions:
+        user_label = f"@{username}" if username else f"ID:{log.user_id}"
+        time_str = (log.timestamp + timedelta(hours=5)).strftime("%H:%M") # UZ Time
+        action_name = log.details[:20] + "..." if log.details and len(log.details) > 20 else (log.details or "-")
+        text += f"• {time_str} | {user_label}: <code>{action_name}</code>\n"
+    
+    await callback.message.edit_text(text, parse_mode="HTML", reply_markup=get_back_keyboard("menu_settings"))
 
 
 async def main():
