@@ -9,14 +9,16 @@ class TelegramParser:
         self.api_id = os.getenv('TELEGRAM_API_ID')
         self.api_hash = os.getenv('TELEGRAM_API_HASH')
         self.phone = os.getenv('TELEGRAM_PHONE')
-        self.client = TelegramClient('anon', self.api_id, self.api_hash)
+        self.client = None
 
     async def start(self):
+        if self.client is None:
+            self.client = TelegramClient('anon', self.api_id, self.api_hash)
         await self.client.start(phone=self.phone)
 
     async def get_post_stats(self, channel_username: str, message_id: int):
         try:
-            if not self.client.is_connected():
+            if self.client is None or not self.client.is_connected():
                 await self.start()
 
             # Try to resolve the channel entity
@@ -83,7 +85,7 @@ class TelegramParser:
     async def get_channel_info(self, channel_username: str) -> dict:
         """Fetch channel metadata + avg reach from last 50 posts via Telethon."""
         try:
-            if not self.client.is_connected():
+            if self.client is None or not self.client.is_connected():
                 await self.start()
 
             try:
